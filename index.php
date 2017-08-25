@@ -1,4 +1,4 @@
 <?php
-echo "ok";
+echo "o est";
 
 ?>
