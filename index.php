@@ -1,209 +1,230 @@
 <?php
+/*******************************************************************
+* Glype is copyright and trademark 2007-2016 UpsideOut, Inc. d/b/a Glype
+* and/or its licensors, successors and assigners. All rights reserved.
+*
+* Use of Glype is subject to the terms of the Software License Agreement.
+* http://www.glype.com/license.php
+*******************************************************************
+* This file is the webroot index.php and displays the proxy form.
+* Nothing too complicated - decode any errors, render relevant
+* options taking into account forced/defaults.
+******************************************************************/
 
-// Note:
-//     Please try to use the https url to bypass keyword filtering.
-//     Otherwise, dont forgot set [paas]passowrd in proxy.ini
-// Contributor:
-//     Phus Lu        <phus.lu@gmail.com>
+/*****************************************************************
+* Initialise the application
+******************************************************************/
 
-$__version__  = '2.1.12';
-$__password__ = '';
-$__timeout__  = 20;
-$__status__ = 0;
-$__xorchar__ = '';
+# Load global file
+require 'includes/init.php';
 
-function decode_request($data) {
-    list($headers_length) = array_values(unpack('n', substr($data, 0, 2)));
-    $headers_data = gzinflate(substr($data, 2, $headers_length));
-    $body = substr($data, 2+intval($headers_length));
+# Send our no-cache headers
+sendNoCache();
 
-    $method  = '';
-    $url     = '';
-    $headers = array();
-    $kwargs  = array();
+# Start the output buffer
+ob_start('');
 
-    foreach (explode("\n", $headers_data) as $kv) {
-        $pair = explode(':', $kv, 2);
-        $key  = $pair[0];
-        $value = trim($pair[1]);
-        if ($key == 'G-Method') {
-            $method = $value;
-        } else if ($key == 'G-Url') {
-            $url = $value;
-        } else if (substr($key, 0, 2) == 'G-') {
-            $kwargs[strtolower(substr($key, 2))] = $value;
-        } else if ($key) {
-            $headers[$key] = $value;
-        }
-    }
-    if (isset($headers['Content-Encoding'])) {
-        if ($headers['Content-Encoding'] == 'deflate') {
-            $body = gzinflate($body);
-            $headers['Content-Length'] = strval(strlen($body));
-            unset($headers['Content-Encoding']);
-        }
-    }
-    return array($method, $url, $headers, $kwargs, $body);
+# Flag valid entry point for hotlink protection
+if (!isset($_GET['e']) || $_GET['e']!='no_hotlink') {
+	$_SESSION['no_hotlink'] = true;
 }
 
-function error_html($errno, $error, $description) {
-    $error = <<<ERROR_STRING
-<html><head>
-<meta http-equiv="content-type" content="text/html;charset=utf-8">
-<title>${errno} ${error}</title>
-<style><!--
-body {font-family: arial,sans-serif}
-div.nav {margin-top: 1ex}
-div.nav A {font-size: 10pt; font-family: arial,sans-serif}
-span.nav {font-size: 10pt; font-family: arial,sans-serif; font-weight: bold}
-div.nav A,span.big {font-size: 12pt; color: #0000cc}
-div.nav A {font-size: 10pt; color: black}
-A.l:link {color: #6f6f6f}
-A.u:link {color: green}
-//--></style>
+/*****************************************************************
+* Determine the options to display
+******************************************************************/
 
-</head>
-<body text=#000000 bgcolor=#ffffff>
-<table border=0 cellpadding=2 cellspacing=0 width=100%>
-<tr><td bgcolor=#3366cc><font face=arial,sans-serif color=#ffffff><b>Error</b></td></tr>
-<tr><td>&nbsp;</td></tr></table>
-<blockquote>
-<H1>${error}</H1>
-${description}
+# Start with an empty array
+$toShow = array();
 
-<p>
-</blockquote>
-<table width=100% cellpadding=0 cellspacing=0><tr><td bgcolor=#3366cc><img alt="" width=1 height=4></td></tr></table>
-</body></html>
-ERROR_STRING;
-    return $error;
+# Loop through the available options
+foreach ( $CONFIG['options'] as $name => $details ) {
+
+	# Check we're allowed to choose
+	if ( ! empty($details['force']) ) {
+		continue;
+	}
+
+	# Generate the HTML 'checked' where appropriate
+	$checked = $options[$name] ? ' checked="checked"' : '';
+
+	# Add to the toShow array
+	$toShow[] = array(
+		'name'			=> $name,
+		'title'			=> $details['title'],
+		'desc'			=> $details['desc'],
+		'escaped_desc'	=> str_replace("'", "\'", $details['desc']),
+		'checked'		=> $checked
+	);
+
 }
 
-function header_function($ch, $header) {
-    if (substr($header, 0, 5) == 'HTTP/') {
-        $terms = explode(' ', $header);
-        $status = intval($terms[1]);
-        $GLOBALS['__status__'] == $status;
-        header('X-Status: ' . $status);
-    } elseif (substr($header, 0, 17) == 'Transfer-Encoding') {
-        // skip transfer-encoding
-    } else {
-        header($header, false, 200);
-    }
-    return strlen($header);
+
+/*****************************************************************
+* Look for any error information in the URL.
+******************************************************************/
+
+# Check for error
+if ( isset($_GET['e']) && isset($phrases[$_GET['e']]) ) {
+
+	# Look for additional arguments (to be used as variables in the error message)
+	$args = isset($_GET['p']) ? @unserialize(base64_decode($_GET['p'])) : array();
+
+	# If we failed to decode the arguments, reset to a blank array
+	if ( ! is_array($args) ) {
+		$args = array();
+	}
+
+	# Did we find any args to pass?
+	if ( $args ) {
+
+		# Add phrase to start of array (to give to call_user_func_array())
+		$args = array_merge( (array) $phrases[$_GET['e']], $args);
+		$error = call_user_func_array('sprintf',$args);
+
+	} else {
+
+		# Just a simple print
+		$error = $phrases[$_GET['e']];
+	}
+
+	# Finally add it to the $themeReplace array to get it in there
+	$themeReplace['error'] = '<div id="error">' . $error . '</div>';
+
+	# And a link to try again?
+	if ( ! empty($_GET['return']) ) {
+		$themeReplace['error'] .= '<p style="text-align:right">[<a href="' . htmlentities($_GET['return']) . '">Reload ' . htmlentities(deproxyURL($_GET['return'])) . '</a>]</p>';
+	}
 }
 
-function write_function($ch, $body) {
-    if ($GLOBALS['__xorchar__']) {
-        echo $body ^ str_repeat($GLOBALS['__xorchar__'], strlen($body));
-    } else {
-        echo $body;
-    }
-    return strlen($body);
+/*****************************************************************
+* Check PHP version
+******************************************************************/
+
+if ( version_compare(PHP_VERSION, 5) < 0 ) {
+	$themeReplace['error'] = '<div id="error">You need PHP 5 to run this script. You are currently running ' . PHP_VERSION . '</div>';
 }
 
-function post()
-{
-    list($method, $url, $headers, $kwargs, $body) = @decode_request(@file_get_contents('php://input'));
-
-    if ($GLOBALS['__password__']) {
-        if (!isset($kwargs['password']) || $GLOBALS['__password__'] != $kwargs['password']) {
-            header("HTTP/1.0 403 Forbidden");
-            echo '403 Forbidden';
-            exit(-1);
-        }
-    }
-
-    if (isset($kwargs['xorchar'])) {
-        $GLOBALS['__xorchar__'] = $kwargs['xorchar'];
-    }
-
-    $curl_opt = array();
-
-    $header_array = array();
-    if ($body) {
-        $headers['Content-Length'] = strval(strlen($body));
-    }
-    $headers['Connection'] = 'close';
-    foreach ($headers as $key => $value) {
-        if ($key) {
-            $header_array[] = join('-', array_map('ucfirst', explode('-', $key))).': '.$value;
-        }
-    }
-
-    $curl_opt[CURLOPT_HTTPHEADER] = $header_array;
-
-    $curl_opt[CURLOPT_RETURNTRANSFER] = true;
-    $curl_opt[CURLOPT_BINARYTRANSFER] = true;
-
-    $curl_opt[CURLOPT_HEADER]         = false;
-    $curl_opt[CURLOPT_HEADERFUNCTION] = 'header_function';
-    $curl_opt[CURLOPT_WRITEFUNCTION]  = 'write_function';
-
-
-    $curl_opt[CURLOPT_FAILONERROR]    = false;
-    $curl_opt[CURLOPT_FOLLOWLOCATION] = false;
-
-    $curl_opt[CURLOPT_CONNECTTIMEOUT] = $GLOBALS['__timeout__'];
-    $curl_opt[CURLOPT_TIMEOUT]        = $GLOBALS['__timeout__'];
-
-    if (isset($kwargs['validate']) && @strval($kwargs['validate'])) {
-        $curl_opt[CURLOPT_SSL_VERIFYPEER] = true;
-        $curl_opt[CURLOPT_SSL_VERIFYHOST] = true;
-    } else {
-        $curl_opt[CURLOPT_SSL_VERIFYPEER] = false;
-        $curl_opt[CURLOPT_SSL_VERIFYHOST] = false;
-    }
-
-    switch (strtoupper($method)) {
-        case 'HEAD':
-            $curl_opt[CURLOPT_NOBODY] = true;
-            break;
-        case 'GET':
-            break;
-        case 'POST':
-            $curl_opt[CURLOPT_POST] = true;
-            $curl_opt[CURLOPT_POSTFIELDS] = $body;
-            break;
-        case 'PUT':
-        case 'DELETE':
-        case 'OPTIONS':
-        case 'TRACE':
-            $curl_opt[CURLOPT_CUSTOMREQUEST] = $method;
-            $curl_opt[CURLOPT_POSTFIELDS] = $body;
-            break;
-        default:
-            echo error_html("403 Forbidden", "Invalid Method: $method", "$method '$url'");
-            exit(-1);
-    }
-
-    $ch = curl_init($url);
-    curl_setopt_array($ch, $curl_opt);
-    curl_exec($ch);
-    $errno = curl_errno($ch);
-    if ($errno && !$GLOBALS['__status__']) {
-        header('HTTP/1.1 502 Bad Gateway');
-        echo error_html("cURL($errno)", "PHP Urlfetch Error: $method", curl_error($ch));
-    }
-    curl_close($ch);
+if (count($adminDetails)===0) {
+	header("HTTP/1.1 302 Found"); header("Location: admin.php"); exit;
 }
 
-function get() {
-    $host = isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : $_SERVER['SERVER_NAME'];
-    $domain = preg_replace('/.*\\.(.+\\..+)$/', '$1', $host);
-    if ($host && $host != $domain && $host != 'www'.$domain) {
-        header('Location: http://www.' . $domain);
-    } else {
-        header('Location: https://www.google.com');
-    }
+
+/*****************************************************************
+* Maintenance - check if we want to do anything now
+******************************************************************/
+
+if ( $CONFIG['tmp_cleanup_interval'] ) {
+
+	# Do we have a next run time?
+	if ( file_exists($file = $CONFIG['tmp_dir'] . 'cron.php') ) {
+
+		# Load the next runtime
+		include $file;
+
+		# Compare to current time
+		$runCleanup = $nextRun <= $_SERVER['REQUEST_TIME'];
+
+	} else {
+
+		# No runtime stored, assume first request with the cleanup option
+		# enabled so run now.
+		$runCleanup = true;
+
+	}
+
+	# This might take a while so do it after user has received
+	# page and cut connection.
+	if ( ! empty($runCleanup) ) {
+		header('Connection: Close');
+	}
+
 }
 
-function main() {
-    if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-        post();
-    } else {
-        get();
-    }
-}
 
-main();
+/*****************************************************************
+* All done, show the page
+******************************************************************/
+
+# Throw all template variables into an array to pass to the template
+$vars['toShow'] = $toShow;
+
+echo loadTemplate('main', $vars);
+
+# And flush buffer
+ob_end_flush();
+
+
+/*****************************************************************
+* Now actually do the maintenance if desired
+******************************************************************/
+
+if ( ! empty($runCleanup) ) {
+
+	# Don't stop
+	ignore_user_abort(true);
+
+	# Update the time file
+	file_put_contents($file, '<?php $nextRun = ' . ( $_SERVER['REQUEST_TIME'] + round(3600 * $CONFIG['tmp_cleanup_interval']) ) . ';');
+
+	# remove old cookie files
+	if ( is_dir($CONFIG['cookies_folder']) && ( $handle = opendir($CONFIG['cookies_folder']) ) ) {
+
+		# Cut off for "active" files (24 hours)
+		$cutOff = $_SERVER['REQUEST_TIME']-86400;
+
+		# Read every file in the cookies dir
+		while ( ( $file = readdir($handle) ) !== false ) {
+
+			# Skip dot files
+			if ( $file[0] == '.' ) {
+				continue;
+			}
+
+			$path = $CONFIG['cookies_folder'] . $file;
+
+			# Check it's not being used
+			if ( filemtime($path) > $cutOff ) {
+				continue;
+			}
+
+			# Delete it
+			unlink($path);
+
+		}
+
+		# And close handle
+		closedir($handle);
+	}
+
+	# remove logs
+	if ( $CONFIG['tmp_cleanup_logs'] && is_dir($CONFIG['logging_destination']) && ( $handle = opendir($CONFIG['logging_destination']) ) ) {
+
+		# Cut off for deletion of old logs
+		$cutOff = $_SERVER['REQUEST_TIME'] - ($CONFIG['tmp_cleanup_logs'] * 86400);
+
+		# Read every file in the logs dir
+		while ( ( $file = readdir($handle) ) !== false ) {
+
+			# Skip dot files
+			if ( $file[0] == '.' ) {
+				continue;
+			}
+
+			$path = $CONFIG['logging_destination'] . $file;
+
+			# Check it's not being used
+			if ( filemtime($path) > $cutOff ) {
+				continue;
+			}
+
+			# Delete it
+			unlink($path);
+		}
+
+		# And close handle
+		closedir($handle);
+	}
+
+	# Finished.
+
+}
